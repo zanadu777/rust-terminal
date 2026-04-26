@@ -1,0 +1,33 @@
+<UserControl x:Class="RustTerminal.ConfigDirectoriesView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="420"
+             d:DesignWidth="720">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <DataGrid Grid.Row="0"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  SelectionMode="Single"
+                  SelectionUnit="FullRow"
+                  ItemsSource="{Binding StoredWorkingDirectories}"
+                  SelectedItem="{Binding SelectedStoredDirectory, Mode=TwoWay}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Directory" Binding="{Binding DirectoryPath}" Width="*" />
+                <DataGridTextColumn Header="Last Used" Binding="{Binding LastUsedLocal, StringFormat=yyyy-MM-dd hh:mm:ss tt}" Width="180" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Use Selected" Command="{Binding UseSelectedDirectoryCommand}" Margin="0,0,8,0" />
+            <Button Content="Remove Selected" Command="{Binding RemoveSelectedDirectoryCommand}" />
+        </StackPanel>
+    </Grid>
+</UserControl>

@@ -1,0 +1,40 @@
+<Window x:Class="RustTerminal.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:RustTerminal"
+        xmlns:pst="clr-namespace:PowershellTerminal;assembly=PowershellTerminal"
+        mc:Ignorable="d"
+        Title="Rust Terminal" Height="500" Width="900">
+    <Window.DataContext>
+        <local:MainWindowVm/>
+    </Window.DataContext>
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="Build">
+                <MenuItem Header="clean" Command="{Binding CargoCleanCommand}"/>
+                <MenuItem Header="build" Command="{Binding CargoBuildCommand}"/>
+                <MenuItem Header="rebuild" Command="{Binding CargoRebuildCommand}"/>
+            </MenuItem>
+        </Menu>
+
+        <ToolBarTray DockPanel.Dock="Top">
+            <ToolBar>
+                <Button Content="Execution Log" Command="{Binding OpenExecutionLogCommand}" />
+                <Button Content="Configuration" Command="{Binding OpenConfigCommand}" Margin="8,0,0,0" />
+            </ToolBar>
+        </ToolBarTray>
+
+        <local:WorkingDirectory DockPanel.Dock="Top"
+                                Margin="8,8,8,0"
+                                Path="{Binding BaseDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                Paths="{Binding WorkingDirectoryHistory}"
+                                BrowseCommand="{Binding BrowseWorkingDirectoryCommand}" />
+
+        <Grid Margin="8" IsEnabled="{Binding HasValidBaseDirectory}">
+            <pst:PowerShellTerminalControl x:Name="TerminalControl"
+                                           StartingDirectory="{Binding BaseDirectory}"/>
+        </Grid>
+    </DockPanel>
+</Window>
