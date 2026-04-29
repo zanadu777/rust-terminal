@@ -31,16 +31,6 @@ namespace PowershellTerminal
         private static readonly Regex ansiSequenceRegex = new(@"(?:\x1B)?\[[0-9;?]*[ -/]*[@-~]", RegexOptions.Compiled);
 
         private ConPtyHost? conPtyHost;
-        private Process? fallbackProcess;
-        private CancellationTokenSource? fallbackReadCts;
-        private Task? fallbackStdoutTask;
-        private Task? fallbackStderrTask;
-        private readonly StringBuilder fallbackInputBuffer = new();
-        private readonly List<string> fallbackHistory = new();
-        private readonly Queue<string> fallbackEchoSuppressionQueue = new();
-        private int fallbackHistoryIndex = -1;
-        private string fallbackCurrentDirectory = AppContext.BaseDirectory;
-        private string fallbackOutputLineBuffer = string.Empty;
         private readonly StringBuilder conPtyInputBuffer = new();
 
         private readonly SemaphoreSlim executeCommandLock = new(1, 1);
@@ -61,7 +51,6 @@ namespace PowershellTerminal
         {
             InitializeComponent();
             Loaded += PowerShellTerminalControl_Loaded;
-            Unloaded += PowerShellTerminalControl_Unloaded;
             SizeChanged += PowerShellTerminalControl_SizeChanged;
         }
 
@@ -84,6 +73,16 @@ namespace PowershellTerminal
         public Task<IReadOnlyList<CommandExecutionResult>> ExecuteCommand(IEnumerable<string> texts)
         {
             return ExecuteCommandBatchCoreAsync(texts);
+        }
+
+        public Microsoft.Web.WebView2.Wpf.WebView2? GetWebView2() => TerminalWebView;
+
+        public void SendInterrupt()
+        {
+            if (conPtyHost is not null)
+            {
+                conPtyHost.WriteInput("\u0003");
+            }
         }
 
         private async Task<IReadOnlyList<CommandExecutionResult>> ExecuteCommandBatchCoreAsync(IEnumerable<string> texts)
@@ -111,14 +110,11 @@ namespace PowershellTerminal
             await executeCommandLock.WaitAsync();
             try
             {
-                AddToCommandHistory(command);
-
                 var start = DateTimeOffset.Now;
 
-                if (conPtyHost is null && fallbackProcess is { HasExited: false } && IsClearCommand(command))
+                if (conPtyHost is null && IsClearCommand(command))
                 {
                     Write("\u001b[2J\u001b[3J\u001b[H");
-                    WriteFallbackPrompt();
                     var clearResult = new CommandExecutionResult(command, string.Empty, start, DateTimeOffset.Now, false);
                     ExecutionLog.Add(clearResult);
                     CommandCompleted?.Invoke(this, new CommandExecutionCompletedEventArgs(clearResult));
@@ -176,36 +172,12 @@ namespace PowershellTerminal
             return pending;
         }
 
-        private void AddToCommandHistory(string command)
-        {
-            if (string.IsNullOrWhiteSpace(command))
-            {
-                return;
-            }
-
-            if (fallbackHistory.Count == 0 || !string.Equals(fallbackHistory[^1], command, StringComparison.Ordinal))
-            {
-                fallbackHistory.Add(command);
-            }
-
-            fallbackHistoryIndex = fallbackHistory.Count;
-        }
-
         private void SendCommandLineToShell(string commandLine, string? displayCommand = null)
         {
             if (conPtyHost is not null)
             {
                 conPtyHost.WriteInput(commandLine + "\r");
                 return;
-            }
-
-            if (fallbackProcess is { HasExited: false })
-            {
-                var shownCommand = string.IsNullOrWhiteSpace(displayCommand) ? commandLine : displayCommand;
-                WriteStyledFallbackCommandLine(shownCommand);
-                fallbackEchoSuppressionQueue.Enqueue(commandLine);
-                fallbackProcess.StandardInput.WriteLine(commandLine);
-                fallbackProcess.StandardInput.Flush();
             }
         }
 
@@ -241,12 +213,8 @@ namespace PowershellTerminal
                 return;
             }
 
-            filtered = FilterFallbackCommandEcho(filtered);
-            if (!string.IsNullOrEmpty(filtered))
-            {
-                AppendPendingCommandOutput(filtered);
-                Write(filtered);
-            }
+            AppendPendingCommandOutput(filtered);
+            Write(filtered);
 
             PublishPendingCommandIfReady();
         }
@@ -279,12 +247,6 @@ namespace PowershellTerminal
                 if (pendingCommand is null || !pendingCommand.IsCompleted || !pendingCommand.AutoPublishOnCompletion)
                 {
                     return;
-                }
-
-                if (!string.IsNullOrEmpty(fallbackOutputLineBuffer))
-                {
-                    pendingCommand.Output.Append(fallbackOutputLineBuffer);
-                    fallbackOutputLineBuffer = string.Empty;
                 }
 
                 result = new CommandExecutionResult(
@@ -374,96 +336,9 @@ namespace PowershellTerminal
             }
         }
 
-        private string FilterFallbackCommandEcho(string chunk)
-        {
-            if (conPtyHost is not null || fallbackProcess is null)
-            {
-                return chunk;
-            }
-
-            if (fallbackEchoSuppressionQueue.Count == 0)
-            {
-                if (string.IsNullOrEmpty(fallbackOutputLineBuffer))
-                {
-                    return chunk;
-                }
-
-                var passthrough = fallbackOutputLineBuffer + chunk;
-                fallbackOutputLineBuffer = string.Empty;
-                return passthrough;
-            }
-
-            var output = new StringBuilder();
-            fallbackOutputLineBuffer += chunk;
-
-            while (true)
-            {
-                var newlineIndex = fallbackOutputLineBuffer.IndexOf('\n');
-                if (newlineIndex < 0)
-                {
-                    break;
-                }
-
-                var lineWithNewLine = fallbackOutputLineBuffer[..(newlineIndex + 1)];
-                fallbackOutputLineBuffer = fallbackOutputLineBuffer[(newlineIndex + 1)..];
-
-                var lineWithoutNewLine = lineWithNewLine.TrimEnd('\r', '\n');
-
-                var suppressForPendingToken = !string.IsNullOrEmpty(pendingCommand?.Token)
-                                             && lineWithoutNewLine.Contains($"[Console]::Out.Write('{pendingCommand.Token}')", StringComparison.Ordinal);
-
-                if (suppressForPendingToken)
-                {
-                    if (fallbackEchoSuppressionQueue.Count > 0)
-                    {
-                        fallbackEchoSuppressionQueue.Dequeue();
-                    }
-
-                    continue;
-                }
-
-                if (fallbackEchoSuppressionQueue.Count > 0)
-                {
-                    var expected = fallbackEchoSuppressionQueue.Peek();
-                    if (IsFallbackEchoLineMatch(lineWithoutNewLine, expected))
-                    {
-                        fallbackEchoSuppressionQueue.Dequeue();
-                        continue;
-                    }
-
-                    fallbackEchoSuppressionQueue.Dequeue();
-                }
-
-                output.Append(lineWithNewLine);
-            }
-
-            return output.ToString();
-        }
-
-        private static bool IsFallbackEchoLineMatch(string line, string expectedCommandLine)
-        {
-            if (string.Equals(line, expectedCommandLine, StringComparison.Ordinal))
-            {
-                return true;
-            }
-
-            var promptSeparator = "> ";
-            var promptIndex = line.LastIndexOf(promptSeparator, StringComparison.Ordinal);
-            if (promptIndex >= 0)
-            {
-                var afterPrompt = line[(promptIndex + promptSeparator.Length)..];
-                if (string.Equals(afterPrompt, expectedCommandLine, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
         private async void PowerShellTerminalControl_Loaded(object sender, RoutedEventArgs e)
         {
-            if (conPtyHost is not null || fallbackProcess is { HasExited: false })
+            if (conPtyHost is not null)
             {
                 terminalProcessStarted = true;
                 return;
@@ -638,96 +513,18 @@ namespace PowershellTerminal
         {
             var resolvedStartDirectory = ResolveStartingDirectory(startingDirectory);
 
-            if (ShouldUseConPty())
+            try
             {
-                try
-                {
-                    conPtyHost = new ConPtyHost();
-                    conPtyHost.OutputReceived += OnTerminalOutputReceived;
-                    conPtyHost.Start("powershell.exe -NoLogo", resolvedStartDirectory, 120, 30);
-                    PostMessageToTerminal(new { type = "focus" });
-                    return;
-                }
-                catch
-                {
-                    conPtyHost?.Dispose();
-                    conPtyHost = null;
-                }
+                conPtyHost = new ConPtyHost();
+                conPtyHost.OutputReceived += OnTerminalOutputReceived;
+                conPtyHost.Start("powershell.exe -NoLogo", resolvedStartDirectory, 120, 30);
+                PostMessageToTerminal(new { type = "focus" });
+                return;
             }
-
-            StartFallbackTerminal(resolvedStartDirectory);
-        }
-
-        private static bool ShouldUseConPty()
-        {
-            var value = Environment.GetEnvironmentVariable("RUSTTERMINAL_USE_CONPTY");
-            return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private void StartFallbackTerminal(string workingDirectory)
-        {
-            var startInfo = new ProcessStartInfo
+            catch
             {
-                FileName = "powershell.exe",
-                Arguments = "-NoLogo",
-                WorkingDirectory = workingDirectory,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            startInfo.Environment["TERM"] = "xterm-256color";
-            startInfo.Environment["CLICOLOR_FORCE"] = "1";
-            startInfo.Environment["CARGO_TERM_COLOR"] = "always";
-            startInfo.Environment["CARGO_TERM_PROGRESS_WHEN"] = "never";
-
-            fallbackProcess = new Process
-            {
-                StartInfo = startInfo,
-                EnableRaisingEvents = true
-            };
-
-            fallbackProcess.Start();
-
-            fallbackReadCts = new CancellationTokenSource();
-            fallbackStdoutTask = ReadFallbackStreamAsync(fallbackProcess.StandardOutput, fallbackReadCts.Token);
-            fallbackStderrTask = ReadFallbackStreamAsync(fallbackProcess.StandardError, fallbackReadCts.Token);
-
-            fallbackCurrentDirectory = workingDirectory;
-            fallbackInputBuffer.Clear();
-            fallbackHistoryIndex = fallbackHistory.Count;
-            fallbackEchoSuppressionQueue.Clear();
-            fallbackOutputLineBuffer = string.Empty;
-            conPtyInputBuffer.Clear();
-            PostMessageToTerminal(new { type = "focus" });
-        }
-
-        private async Task ReadFallbackStreamAsync(StreamReader reader, CancellationToken cancellationToken)
-        {
-            var buffer = new char[1024];
-
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                int read;
-                try
-                {
-                    read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
-                }
-                catch
-                {
-                    break;
-                }
-
-                if (read <= 0)
-                {
-                    break;
-                }
-
-                HandleTerminalOutputChunk(new string(buffer, 0, read));
+                conPtyHost?.Dispose();
+                conPtyHost = null;
             }
         }
 
@@ -775,10 +572,6 @@ namespace PowershellTerminal
                             {
                                 HandleConPtyInput(payload.data);
                             }
-                            else if (fallbackProcess is { HasExited: false })
-                            {
-                                HandleFallbackInput(payload.data);
-                            }
                         }
                         break;
 
@@ -806,134 +599,6 @@ namespace PowershellTerminal
             }
             catch
             {
-            }
-        }
-
-        private void HandleFallbackInput(string data)
-        {
-            if (fallbackProcess is null || fallbackProcess.HasExited)
-            {
-                return;
-            }
-
-            for (var i = 0; i < data.Length; i++)
-            {
-                var ch = data[i];
-
-                if (ch == '\u001b' && i + 2 < data.Length && data[i + 1] == '[')
-                {
-                    var code = data[i + 2];
-                    i += 2;
-
-                    switch (code)
-                    {
-                        case 'A':
-                            RecallHistoryPrevious();
-                            break;
-                        case 'B':
-                            RecallHistoryNext();
-                            break;
-                        case 'C':
-                        case 'D':
-                            break;
-                    }
-
-                    continue;
-                }
-
-                switch (ch)
-                {
-                    case '\r':
-                        var command = fallbackInputBuffer.ToString();
-                        fallbackInputBuffer.Clear();
-                        var commandStart = DateTimeOffset.Now;
-
-                        if (!string.IsNullOrWhiteSpace(command))
-                        {
-                            if (fallbackHistory.Count == 0 || !string.Equals(fallbackHistory[^1], command, StringComparison.Ordinal))
-                            {
-                                fallbackHistory.Add(command);
-                            }
-                        }
-
-                        fallbackHistoryIndex = fallbackHistory.Count;
-
-                        if (IsClearCommand(command))
-                        {
-                            Write("\u001b[2J\u001b[3J\u001b[H");
-                            WriteFallbackPrompt();
-                            PublishKeyboardCommandResult(command, commandStart);
-                            break;
-                        }
-
-                        if (!string.IsNullOrWhiteSpace(command))
-                        {
-                            var trimmedCommand = command.Trim();
-                            var pending = CreatePendingCommand(trimmedCommand, commandStart, autoPublishOnCompletion: true);
-                            var wrappedCommand = $"{trimmedCommand}; [Console]::Out.Write('{pending.Token}')";
-                            fallbackEchoSuppressionQueue.Enqueue(wrappedCommand);
-                            Write("\r\n");
-                            fallbackProcess.StandardInput.WriteLine(wrappedCommand);
-                            fallbackProcess.StandardInput.Flush();
-                        }
-                        else
-                        {
-                            Write("\r\n");
-                            fallbackProcess.StandardInput.WriteLine(command);
-                            fallbackProcess.StandardInput.Flush();
-                        }
-                        break;
-
-                    case '\u007f':
-                    case '\b':
-                        if (fallbackInputBuffer.Length > 0)
-                        {
-                            fallbackInputBuffer.Length--;
-                            Write("\b \b");
-                        }
-                        break;
-
-                    default:
-                        if (!char.IsControl(ch))
-                        {
-                            var isFirstTokenChar = !fallbackInputBuffer.ToString().Contains(' ') && !fallbackInputBuffer.ToString().Contains('\t') && !char.IsWhiteSpace(ch);
-                            fallbackInputBuffer.Append(ch);
-
-                            if (isFirstTokenChar)
-                            {
-                                Write($"{InputColorStart}{ch}{InputColorEnd}");
-                            }
-                            else
-                            {
-                                Write(ch.ToString());
-                            }
-                        }
-                        break;
-                }
-            }
-        }
-
-        private void ReplaceCurrentInput(string newInput)
-        {
-            while (fallbackInputBuffer.Length > 0)
-            {
-                fallbackInputBuffer.Length--;
-                Write("\b \b");
-            }
-
-            foreach (var ch in newInput)
-            {
-                var isFirstTokenChar = !fallbackInputBuffer.ToString().Contains(' ') && !fallbackInputBuffer.ToString().Contains('\t') && !char.IsWhiteSpace(ch);
-                fallbackInputBuffer.Append(ch);
-
-                if (isFirstTokenChar)
-                {
-                    Write($"{InputColorStart}{ch}{InputColorEnd}");
-                }
-                else
-                {
-                    Write(ch.ToString());
-                }
             }
         }
 
@@ -977,7 +642,6 @@ namespace PowershellTerminal
                         }
                         else
                         {
-                            AddToCommandHistory(trimmedCommand);
                             var pending = CreatePendingCommand(trimmedCommand, start, autoPublishOnCompletion: true);
                             outbound.Append($"; [Console]::Out.Write('{pending.Token}')");
                         }
@@ -999,12 +663,6 @@ namespace PowershellTerminal
             {
                 conPtyHost.WriteInput(outbound.ToString());
             }
-        }
-
-        private void WriteFallbackPrompt()
-        {
-            var condaPrefix = Environment.GetEnvironmentVariable("CONDA_PROMPT_MODIFIER") ?? string.Empty;
-            Write($"{condaPrefix}PS {fallbackCurrentDirectory}> ");
         }
 
         private static bool IsClearCommand(string command)
@@ -1078,41 +736,6 @@ namespace PowershellTerminal
                 conPtyHost = null;
             }
 
-            try
-            {
-                fallbackReadCts?.Cancel();
-            }
-            catch
-            {
-            }
-
-            try
-            {
-                if (fallbackProcess is { HasExited: false })
-                {
-                    fallbackProcess.StandardInput.WriteLine("exit");
-                    fallbackProcess.StandardInput.Flush();
-                    fallbackProcess.WaitForExit(500);
-                }
-            }
-            catch
-            {
-            }
-            finally
-            {
-                fallbackProcess?.Dispose();
-                fallbackProcess = null;
-            }
-
-            fallbackReadCts?.Dispose();
-            fallbackReadCts = null;
-            fallbackStdoutTask = null;
-            fallbackStderrTask = null;
-            fallbackInputBuffer.Clear();
-            fallbackHistory.Clear();
-            fallbackHistoryIndex = -1;
-            fallbackEchoSuppressionQueue.Clear();
-            fallbackOutputLineBuffer = string.Empty;
             conPtyInputBuffer.Clear();
 
             lock (pendingCommandLock)
@@ -1125,36 +748,6 @@ namespace PowershellTerminal
             terminalPageReady = false;
             terminalReady = false;
             terminalProcessStarted = false;
-        }
-
-        private void RecallHistoryPrevious()
-        {
-            if (fallbackHistory.Count == 0 || fallbackHistoryIndex <= 0)
-            {
-                return;
-            }
-
-            fallbackHistoryIndex--;
-            ReplaceCurrentInput(fallbackHistory[fallbackHistoryIndex]);
-        }
-
-        private void RecallHistoryNext()
-        {
-            if (fallbackHistory.Count == 0)
-            {
-                return;
-            }
-
-            if (fallbackHistoryIndex < fallbackHistory.Count - 1)
-            {
-                fallbackHistoryIndex++;
-                ReplaceCurrentInput(fallbackHistory[fallbackHistoryIndex]);
-            }
-            else
-            {
-                fallbackHistoryIndex = fallbackHistory.Count;
-                ReplaceCurrentInput(string.Empty);
-            }
         }
 
         private void PublishKeyboardCommandResult(string? command, DateTimeOffset start)
@@ -1182,7 +775,7 @@ namespace PowershellTerminal
                 return;
             }
 
-            if (conPtyHost is not null || fallbackProcess is { HasExited: false })
+            if (conPtyHost is not null)
             {
                 terminalProcessStarted = true;
                 return;

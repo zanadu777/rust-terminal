@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Input;
+using System.Text.Json;
 
 namespace RustTerminal
 {
@@ -34,6 +35,8 @@ namespace RustTerminal
         public ObservableCollection<StoredWorkingDirectory> StoredWorkingDirectories { get; } = new();
         public ObservableCollection<CommandExecutionResult> CommandExecutions { get; } = new();
 
+        public event EventHandler<string>? DirectoryChanged;
+
         public ICommand CargoBuildCommand { get; }
         public ICommand CargoCleanCommand { get; }
         public ICommand CargoRebuildCommand { get; }
@@ -42,6 +45,8 @@ namespace RustTerminal
         public ICommand OpenConfigCommand { get; }
         public ICommand RemoveSelectedDirectoryCommand { get; }
         public ICommand UseSelectedDirectoryCommand { get; }
+        public ICommand OpenRecentCommandsBrowserCommand { get; }
+        public ICommand ControlCCommand { get; }
 
         public MainWindowVm()
         {
@@ -53,6 +58,8 @@ namespace RustTerminal
             OpenConfigCommand = new RelayCommand(OpenConfig);
             RemoveSelectedDirectoryCommand = new RelayCommand(RemoveSelectedDirectory, () => SelectedStoredDirectory is not null);
             UseSelectedDirectoryCommand = new RelayCommand(UseSelectedDirectory, () => SelectedStoredDirectory is not null);
+            OpenRecentCommandsBrowserCommand = new RelayCommand(OpenRecentCommandsBrowser);
+            ControlCCommand = new RelayCommand(SendControlC);
 
             LoadDirectoryHistory();
             var storedBaseDirectory = LoadSetting(BaseDirectoryKey);
@@ -82,7 +89,14 @@ namespace RustTerminal
             {
                 SaveSetting(BaseDirectoryKey, value);
                 UpsertWorkingDirectory(value, DateTimeOffset.Now);
-                ReloadDirectoryHistory(value);
+                
+                // Raise event for code-behind to notify RecentCommands
+                DirectoryChanged?.Invoke(this, value);
+
+                if (terminal is not null && Directory.Exists(value))
+                {
+                    terminal.ExecuteCommand($"cd '{value}'");
+                }
             }
         }
 
@@ -141,6 +155,44 @@ namespace RustTerminal
 
             configWindow.Show();
             configWindow.Activate();
+        }
+
+        private void OpenRecentCommandsBrowser()
+        {
+            var browserVm = new RecentCommandsBrowserVm();
+            
+            // Set the current directory BEFORE creating the view
+            browserVm.SetCurrentDirectory(BaseDirectory);
+
+            var browserView = new RecentCommandsBrowser
+            {
+                DataContext = browserVm
+            };
+
+            var browserWindow = new Window
+            {
+                Title = "Recent Commands Browser",
+                Width = 800,
+                Height = 500,
+                Owner = Application.Current.MainWindow,
+                Content = browserView
+            };
+
+            browserWindow.Show();
+            browserWindow.Activate();
+        }
+
+        private void SendControlC()
+        {
+            System.Diagnostics.Debug.WriteLine("SendControlC called");
+            
+            if (terminal is null)
+            {
+                System.Diagnostics.Debug.WriteLine("Terminal is null");
+                return;
+            }
+            
+            terminal.SendInterrupt();
         }
 
         private void RemoveSelectedDirectory()
@@ -256,6 +308,16 @@ namespace RustTerminal
             }
 
             Application.Current.Dispatcher.Invoke(() => CommandExecutions.Add(e.Result));
+        }
+
+        private void ExecuteRecentCommand(string? command)
+        {
+            if (string.IsNullOrWhiteSpace(command) || terminal is null)
+            {
+                return;
+            }
+
+            terminal.ExecuteCommand(command);
         }
 
         private static string? LoadSetting(string key)
@@ -407,6 +469,15 @@ namespace RustTerminal
                                   CREATE TABLE IF NOT EXISTS WorkingDirectories (
                                       DirectoryPath TEXT PRIMARY KEY,
                                       LastUsedUtc TEXT NOT NULL
+                                  );
+
+                                  CREATE TABLE IF NOT EXISTS RecentCommands (
+                                      Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                      CommandText TEXT NOT NULL,
+                                      DirectoryPath TEXT NOT NULL,
+                                      ExecutedUtc TEXT NOT NULL,
+                                      ResponseText TEXT,
+                                      UNIQUE(CommandText, DirectoryPath)
                                   );
                                   """;
             command.ExecuteNonQuery();

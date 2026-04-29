@@ -53,5 +53,41 @@ namespace RustTerminal
             get => (ICommand?)GetValue(BrowseCommandProperty);
             set => SetValue(BrowseCommandProperty, value);
         }
+
+        private void PathCombo_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Return || e.Key == Key.Tab)
+            {
+                e.Handled = true;
+                MoveFocusToTerminal();
+            }
+        }
+
+        private void MoveFocusToTerminal()
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                var window = Window.GetWindow(this) as MainWindow;
+                if (window?.TerminalControl is null)
+                {
+                    return;
+                }
+
+                var terminalControl = window.TerminalControl;
+                var webView = terminalControl.GetWebView2();
+                
+                if (webView is not null && webView.CoreWebView2 is not null)
+                {
+                    try
+                    {
+                        webView.Focus();
+                        webView.CoreWebView2.PostWebMessageAsJson(System.Text.Json.JsonSerializer.Serialize(new { type = "focus" }));
+                    }
+                    catch
+                    {
+                    }
+                }
+            });
+        }
     }
 }

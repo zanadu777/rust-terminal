@@ -25,13 +25,16 @@
                    VerticalAlignment="Center"
                    Text="Working Directory" />
 
-        <ComboBox Grid.Row="0"
+        <ComboBox x:Name="PathCombo"
+                  Grid.Row="0"
                   Grid.Column="2"
                   IsEditable="True"
-                  StaysOpenOnEdit="True"
+                  StaysOpenOnEdit="False"
                   IsTextSearchEnabled="False"
                   ItemsSource="{Binding Paths, RelativeSource={RelativeSource AncestorType={x:Type local:WorkingDirectory}}}"
-                  Text="{Binding Path, RelativeSource={RelativeSource AncestorType={x:Type local:WorkingDirectory}}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                  SelectedItem="{Binding Path, RelativeSource={RelativeSource AncestorType={x:Type local:WorkingDirectory}}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                  Text="{Binding Path, RelativeSource={RelativeSource AncestorType={x:Type local:WorkingDirectory}}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                  KeyDown="PathCombo_KeyDown" />
 
         <Button Grid.Row="0"
                 Grid.Column="4"

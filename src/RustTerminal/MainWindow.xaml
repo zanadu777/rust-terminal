@@ -16,6 +16,7 @@
                 <MenuItem Header="clean" Command="{Binding CargoCleanCommand}"/>
                 <MenuItem Header="build" Command="{Binding CargoBuildCommand}"/>
                 <MenuItem Header="rebuild" Command="{Binding CargoRebuildCommand}"/>
+                <MenuItem Header="control+c" Command="{Binding ControlCCommand}"/>
             </MenuItem>
         </Menu>
 
@@ -23,6 +24,7 @@
             <ToolBar>
                 <Button Content="Execution Log" Command="{Binding OpenExecutionLogCommand}" />
                 <Button Content="Configuration" Command="{Binding OpenConfigCommand}" Margin="8,0,0,0" />
+                <Button Content="Recent Commands" Command="{Binding OpenRecentCommandsBrowserCommand}" Margin="8,0,0,0" />
             </ToolBar>
         </ToolBarTray>
 
@@ -31,6 +33,10 @@
                                 Path="{Binding BaseDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                 Paths="{Binding WorkingDirectoryHistory}"
                                 BrowseCommand="{Binding BrowseWorkingDirectoryCommand}" />
+
+        <local:RecentCommands x:Name="RecentCommandsControl"
+                              DockPanel.Dock="Left"
+                              Margin="8,8,8,0" />
 
         <Grid Margin="8" IsEnabled="{Binding HasValidBaseDirectory}">
             <pst:PowerShellTerminalControl x:Name="TerminalControl"
