@@ -30,7 +30,7 @@ namespace PowershellTerminal
 
         private static readonly Regex ansiSequenceRegex = new(@"(?:\x1B)?\[[0-9;?]*[ -/]*[@-~]", RegexOptions.Compiled);
 
-        private ConPtyHost? conPtyHost;
+        private PowerShellHost? shellHost;
         private readonly StringBuilder conPtyInputBuffer = new();
 
         private readonly SemaphoreSlim executeCommandLock = new(1, 1);
@@ -79,9 +79,9 @@ namespace PowershellTerminal
 
         public void SendInterrupt()
         {
-            if (conPtyHost is not null)
+            if (shellHost is not null)
             {
-                conPtyHost.WriteInput("\u0003");
+                shellHost.WriteInput("\u0003");
             }
         }
 
@@ -112,7 +112,7 @@ namespace PowershellTerminal
             {
                 var start = DateTimeOffset.Now;
 
-                if (conPtyHost is null && IsClearCommand(command))
+                if (shellHost is null && IsClearCommand(command))
                 {
                     Write("\u001b[2J\u001b[3J\u001b[H");
                     var clearResult = new CommandExecutionResult(command, string.Empty, start, DateTimeOffset.Now, false);
@@ -174,9 +174,9 @@ namespace PowershellTerminal
 
         private void SendCommandLineToShell(string commandLine, string? displayCommand = null)
         {
-            if (conPtyHost is not null)
+            if (shellHost is not null)
             {
-                conPtyHost.WriteInput(commandLine + "\r");
+                shellHost.WriteInput(commandLine + "\r");
                 return;
             }
         }
@@ -338,7 +338,7 @@ namespace PowershellTerminal
 
         private async void PowerShellTerminalControl_Loaded(object sender, RoutedEventArgs e)
         {
-            if (conPtyHost is not null || terminalProcessStarted)
+            if (shellHost is not null || terminalProcessStarted)
             {
                 terminalProcessStarted = true;
                 return;
@@ -483,8 +483,30 @@ namespace PowershellTerminal
     fitTerminal();
     postMessage({ type: 'ready' });
 
+    let inputLine = '';
     terminal.onData(data => {
-      postMessage({ type: 'input', data });
+      for (let i = 0; i < data.length; i++) {
+        const char = data[i];
+        
+        if (char === '\r') {
+          // Enter key - send the complete line ONLY (don't send individual chars)
+          // The complete line is what we've buffered + the Enter
+          postMessage({ type: 'input', data: inputLine + '\r' });
+          inputLine = '';
+        } else if (char === '\u007f' || char === '\b') {
+          // Backspace - remove from buffer and send to terminal for visual feedback
+          if (inputLine.length > 0) {
+            inputLine = inputLine.slice(0, -1);
+          }
+          postMessage({ type: 'input', data: char });
+        } else if (char !== '\n' && !char.match(/[\u0000-\u001f]/)) {
+          // Regular character - just buffer it, DON'T send to backend yet
+          // We'll send it when Enter is pressed
+          inputLine += char;
+          // But DO write it to the terminal locally for visual feedback
+          terminal.write(char);
+        }
+      }
     });
 
     chrome.webview.addEventListener('message', event => {
@@ -515,18 +537,19 @@ namespace PowershellTerminal
 
             try
             {
-                conPtyHost = new ConPtyHost();
-                conPtyHost.OutputReceived += OnTerminalOutputReceived;
-                conPtyHost.Start("powershell.exe -NoLogo", resolvedStartDirectory, 120, 30);
+                shellHost = new PowerShellHost();
+                shellHost.OutputReceived += OnTerminalOutputReceived;
+                shellHost.Start(resolvedStartDirectory);
                 PostMessageToTerminal(new { type = "focus" });
                 return;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Failed to start ConPTY: {ex.Message}");
-                conPtyHost?.Dispose();
-                conPtyHost = null;
-                throw;
+                System.Diagnostics.Debug.WriteLine($"Terminal startup failed: {ex.Message}");
+                shellHost?.Dispose();
+                shellHost = null;
+                
+                Write($"[ERROR] Terminal failed to initialize: {ex.Message}\r\n");
             }
         }
 
@@ -570,7 +593,7 @@ namespace PowershellTerminal
                     case "input":
                         if (!string.IsNullOrEmpty(payload.data))
                         {
-                            if (conPtyHost is not null)
+                            if (shellHost is not null)
                             {
                                 HandleConPtyInput(payload.data);
                             }
@@ -578,9 +601,9 @@ namespace PowershellTerminal
                         break;
 
                     case "resize":
-                        if (conPtyHost is not null && payload.cols > 0 && payload.rows > 0)
+                        if (shellHost is not null && payload.cols > 0 && payload.rows > 0)
                         {
-                            conPtyHost.Resize((short)payload.cols, (short)payload.rows);
+                            shellHost.Resize((short)payload.cols, (short)payload.rows);
                         }
                         break;
 
@@ -606,64 +629,48 @@ namespace PowershellTerminal
 
         private void HandleConPtyInput(string data)
         {
-            if (conPtyHost is null)
+            if (shellHost is null)
             {
                 return;
             }
 
-            var outbound = new StringBuilder();
+            // Data from JavaScript is either:
+            // 1. Backspace character (\b or \u007f)
+            // 2. Complete command line ending with \r (only on Enter key)
 
             for (var i = 0; i < data.Length; i++)
             {
                 var ch = data[i];
 
+                // Handle backspace
                 if (ch == '\u007f' || ch == '\b')
                 {
                     if (conPtyInputBuffer.Length > 0)
                     {
                         conPtyInputBuffer.Length--;
                     }
-
-                    outbound.Append('\b');
+                    Write("\b \b");
                     continue;
                 }
 
+                // Handle Enter - complete line transmission
                 if (ch == '\r')
                 {
-                    var command = conPtyInputBuffer.ToString();
+                    var fullCommand = conPtyInputBuffer.ToString();
                     conPtyInputBuffer.Clear();
 
-                    if (!string.IsNullOrWhiteSpace(command))
-                    {
-                        var trimmedCommand = command.Trim();
-                        var start = DateTimeOffset.Now;
-
-                        if (IsClearCommand(trimmedCommand))
-                        {
-                            PublishKeyboardCommandResult(trimmedCommand, start);
-                        }
-                        else
-                        {
-                            var pending = CreatePendingCommand(trimmedCommand, start, autoPublishOnCompletion: true);
-                            outbound.Append($"; [Console]::Out.Write('{pending.Token}')");
-                        }
-                    }
-
-                    outbound.Append(ch);
+                    Write("\r\n");
+                    
+                    // Send the complete command to PowerShell
+                    shellHost.WriteInput(fullCommand);
                     continue;
                 }
 
+                // Regular character - buffer it (shouldn't normally get here since JS handles echo)
                 if (ch != '\n' && !char.IsControl(ch))
                 {
                     conPtyInputBuffer.Append(ch);
                 }
-
-                outbound.Append(ch);
-            }
-
-            if (outbound.Length > 0)
-            {
-                conPtyHost.WriteInput(outbound.ToString());
             }
         }
 
@@ -731,11 +738,11 @@ namespace PowershellTerminal
             {
             }
 
-            if (conPtyHost is not null)
+            if (shellHost is not null)
             {
-                conPtyHost.OutputReceived -= OnTerminalOutputReceived;
-                conPtyHost.Dispose();
-                conPtyHost = null;
+                shellHost.OutputReceived -= OnTerminalOutputReceived;
+                shellHost.Dispose();
+                shellHost = null;
             }
 
             conPtyInputBuffer.Clear();
@@ -777,7 +784,7 @@ namespace PowershellTerminal
                 return;
             }
 
-            if (conPtyHost is not null)
+            if (shellHost is not null)
             {
                 terminalProcessStarted = true;
                 return;

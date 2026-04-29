@@ -10,6 +10,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3405.78" />
     <PackageReference Include="Microsoft.Windows.Console.ConPTY" Version="1.24.260303001" />
+    <PackageReference Include="System.Management.Automation" Version="7.4.7" />
   </ItemGroup>
 
 </Project>
