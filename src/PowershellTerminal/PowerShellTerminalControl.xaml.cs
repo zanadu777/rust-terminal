@@ -338,7 +338,7 @@ namespace PowershellTerminal
 
         private async void PowerShellTerminalControl_Loaded(object sender, RoutedEventArgs e)
         {
-            if (conPtyHost is not null)
+            if (conPtyHost is not null || terminalProcessStarted)
             {
                 terminalProcessStarted = true;
                 return;
@@ -351,7 +351,7 @@ namespace PowershellTerminal
             }
             catch (Exception ex)
             {
-                Write($"\r\n[terminal startup error] {ex.Message}\r\n");
+                Write($"\r\n[startup error] {ex.Message}\r\n");
             }
         }
 
@@ -521,10 +521,12 @@ namespace PowershellTerminal
                 PostMessageToTerminal(new { type = "focus" });
                 return;
             }
-            catch
+            catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"Failed to start ConPTY: {ex.Message}");
                 conPtyHost?.Dispose();
                 conPtyHost = null;
+                throw;
             }
         }
 
