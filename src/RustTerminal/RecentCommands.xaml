@@ -7,6 +7,142 @@
              mc:Ignorable="d"
              d:DesignHeight="300"
              d:DesignWidth="800">
+    <UserControl.Resources>
+        <local:CommandMatchConverter x:Key="CommandMatchConverter" />
+        <local:RunningButtonEnabledConverter x:Key="RunningButtonEnabledConverter" />
+
+        <Style x:Key="FlatListBoxItemStyle" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <ContentPresenter />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="RecentRunButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#D0D0D0"/>
+            <Setter Property="BorderBrush" Value="#9A9A9A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="MinHeight" Value="38"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center" Margin="6,2"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Opacity" Value="1"/>
+            <Setter Property="IsHitTestVisible">
+                <Setter.Value>
+                    <MultiBinding Converter="{StaticResource CommandMatchConverter}">
+                        <Binding Path="Command" />
+                        <Binding RelativeSource="{RelativeSource AncestorType={x:Type local:RecentCommands}}" Path="DataContext.ActiveRecentCommandKey" />
+                    </MultiBinding>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#E1E1E1"/>
+                    <Setter Property="BorderBrush" Value="#7A7A7A"/>
+                </Trigger>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType={x:Type local:RecentCommands}}, Path=DataContext.IsRunInProgress}" Value="False">
+                    <Setter Property="IsHitTestVisible" Value="True"/>
+                    <Setter Property="Background" Value="#D0D0D0"/>
+                    <Setter Property="BorderBrush" Value="#9A9A9A"/>
+                    <Setter Property="Foreground" Value="#1E1E1E"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType={x:Type local:RecentCommands}}, Path=DataContext.IsRunInProgress}" Value="True">
+                    <Setter Property="Background" Value="#BEBEBE"/>
+                    <Setter Property="BorderBrush" Value="#8A8A8A"/>
+                    <Setter Property="Foreground" Value="#505050"/>
+                </DataTrigger>
+                <DataTrigger Value="True">
+                    <DataTrigger.Binding>
+                        <MultiBinding Converter="{StaticResource CommandMatchConverter}">
+                            <Binding Path="Command" />
+                            <Binding RelativeSource="{RelativeSource AncestorType={x:Type local:RecentCommands}}" Path="DataContext.ActiveRecentCommandKey" />
+                        </MultiBinding>
+                    </DataTrigger.Binding>
+                    <Setter Property="Background" Value="#FFB74D"/>
+                    <Setter Property="BorderBrush" Value="#F57C00"/>
+                    <Setter Property="Foreground" Value="#1E1E1E"/>
+                    <Setter Property="Opacity" Value="1"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="FavoriteRunButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#D0D0D0"/>
+            <Setter Property="BorderBrush" Value="#9A9A9A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="MinHeight" Value="38"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center" Margin="6,2"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Opacity" Value="1"/>
+            <Setter Property="IsHitTestVisible">
+                <Setter.Value>
+                    <MultiBinding Converter="{StaticResource CommandMatchConverter}">
+                        <Binding Path="Name" />
+                        <Binding RelativeSource="{RelativeSource AncestorType={x:Type local:RecentCommands}}" Path="DataContext.ActiveFavoriteNameKey" />
+                    </MultiBinding>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#E1E1E1"/>
+                    <Setter Property="BorderBrush" Value="#7A7A7A"/>
+                </Trigger>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType={x:Type local:RecentCommands}}, Path=DataContext.IsRunInProgress}" Value="False">
+                    <Setter Property="IsHitTestVisible" Value="True"/>
+                    <Setter Property="Background" Value="#D0D0D0"/>
+                    <Setter Property="BorderBrush" Value="#9A9A9A"/>
+                    <Setter Property="Foreground" Value="#1E1E1E"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType={x:Type local:RecentCommands}}, Path=DataContext.IsRunInProgress}" Value="True">
+                    <Setter Property="Background" Value="#BEBEBE"/>
+                    <Setter Property="BorderBrush" Value="#8A8A8A"/>
+                    <Setter Property="Foreground" Value="#505050"/>
+                </DataTrigger>
+                <DataTrigger Value="True">
+                    <DataTrigger.Binding>
+                        <MultiBinding Converter="{StaticResource CommandMatchConverter}">
+                            <Binding Path="Name" />
+                            <Binding RelativeSource="{RelativeSource AncestorType={x:Type local:RecentCommands}}" Path="DataContext.ActiveFavoriteNameKey" />
+                        </MultiBinding>
+                    </DataTrigger.Binding>
+                    <Setter Property="Background" Value="#FFB74D"/>
+                    <Setter Property="BorderBrush" Value="#F57C00"/>
+                    <Setter Property="Foreground" Value="#1E1E1E"/>
+                    <Setter Property="Opacity" Value="1"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
     <Grid Margin="8">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -19,10 +155,10 @@
 
         <TextBlock Grid.Row="0"
                    Grid.Column="0"
-                   Text="Recent Commands"
-                   FontSize="14"
+                   Text="Commands"
+                   FontSize="24"
                    FontWeight="Bold"
-                   VerticalAlignment="Center" />
+                   Margin="0,0,0,8" />
 
         <CheckBox Grid.Row="0"
                   Grid.Column="1"
@@ -31,27 +167,55 @@
                   VerticalAlignment="Center"
                   Margin="8,0,0,0" />
 
-        <ItemsControl Grid.Row="1"
-                      Grid.ColumnSpan="2"
-                      ItemsSource="{Binding RecentCommands}"
-                      Margin="0,8,0,0">
-            <ItemsControl.ItemsPanel>
-                <ItemsPanelTemplate>
-                    <StackPanel Orientation="Vertical" />
-                </ItemsPanelTemplate>
-            </ItemsControl.ItemsPanel>
-            <ItemsControl.ItemTemplate>
-                <DataTemplate>
-                    <Button Command="{Binding RelativeSource={RelativeSource AncestorType={x:Type local:RecentCommands}}, Path=DataContext.ExecuteRecentCommandCommand}"
-                            CommandParameter="{Binding Command}"
-                            Padding="10,6"
-                            Margin="0,0,0,8"
-                            ToolTip="{Binding Command, StringFormat='Run: {0}'}">
-                        <TextBlock Text="{Binding Command}"
-                                   TextTrimming="CharacterEllipsis" />
-                    </Button>
-                </DataTemplate>
-            </ItemsControl.ItemTemplate>
-        </ItemsControl>
+        <TabControl Grid.Row="1" Grid.ColumnSpan="2" Margin="0,8,0,0">
+            <TabItem Header="Recent">
+                <ListBox ItemsSource="{Binding RecentCommands}"
+                         ItemContainerStyle="{StaticResource FlatListBoxItemStyle}"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         HorizontalContentAlignment="Stretch"
+                         Padding="0,0,10,0">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Button Style="{StaticResource RecentRunButtonStyle}"
+                                    Command="{Binding RelativeSource={RelativeSource AncestorType={x:Type local:RecentCommands}}, Path=DataContext.ExecuteRecentCommandCommand}"
+                                    CommandParameter="{Binding Command}"
+                                    Padding="10,6"
+                                    Margin="0,0,0,8"
+                                    HorizontalAlignment="Stretch"
+                                    ToolTip="{Binding Command, StringFormat='Run: {0}'}">
+                                <TextBlock Text="{Binding Command}"
+                                           TextWrapping="Wrap"
+                                           MaxWidth="200" />
+                            </Button>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </TabItem>
+
+            <TabItem Header="Favorite">
+                <ListBox ItemsSource="{Binding Favorites}"
+                         ItemContainerStyle="{StaticResource FlatListBoxItemStyle}"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         HorizontalContentAlignment="Stretch"
+                         Padding="0,0,10,0"
+                         Margin="8">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Button Style="{StaticResource FavoriteRunButtonStyle}"
+                                    Command="{Binding RelativeSource={RelativeSource AncestorType={x:Type local:RecentCommands}}, Path=DataContext.ExecuteFavoriteCommand}"
+                                    CommandParameter="{Binding}"
+                                    Padding="10,6"
+                                    Margin="0,0,0,8"
+                                    HorizontalAlignment="Stretch"
+                                    ToolTip="{Binding CommandsText}">
+                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                            </Button>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </TabItem>
+        </TabControl>
     </Grid>
 </UserControl>

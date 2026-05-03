@@ -1,13 +1,8 @@
 using Microsoft.Web.WebView2.Core;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 
@@ -29,9 +24,16 @@ namespace PowershellTerminal
         private const string InputColorEnd = "\u001b[0m";
 
         private static readonly Regex ansiSequenceRegex = new(@"(?:\x1B)?\[[0-9;?]*[ -/]*[@-~]", RegexOptions.Compiled);
+        private static readonly Regex noisyEchoRegex = new(@"^PS\s+.+>\s+(cd\s+'.*'|Set-Location\s+'.*'\s+\|\s+Out-Null)\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex promptRegex = new(@"^(?:\([^)]+\)\s+)*PS\s+[^\r\n>]+>\s?", RegexOptions.Compiled | RegexOptions.Multiline);
+        private static readonly Regex leadingPromptPrefixRegex = new(@"^(?:\([^)]+\)\s+)*PS\s+[^>\r\n]+>\s*", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private PowerShellHost? shellHost;
         private readonly StringBuilder conPtyInputBuffer = new();
+        private int conPtyCursorIndex;
+        private readonly List<string> inputHistory = new();
+        private int inputHistoryIndex = -1;
+        private string currentPromptText = "PS > ";
 
         private readonly SemaphoreSlim executeCommandLock = new(1, 1);
         private readonly object pendingCommandLock = new();
@@ -51,6 +53,7 @@ namespace PowershellTerminal
         {
             InitializeComponent();
             Loaded += PowerShellTerminalControl_Loaded;
+            Unloaded += PowerShellTerminalControl_Unloaded;
             SizeChanged += PowerShellTerminalControl_SizeChanged;
         }
 
@@ -85,6 +88,17 @@ namespace PowershellTerminal
             }
         }
 
+        public void SetWorkingDirectory(string path)
+        {
+            if (shellHost is null || string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            var escaped = path.Replace("'", "''");
+            shellHost.WriteInput($"cd '{escaped}'");
+        }
+
         private async Task<IReadOnlyList<CommandExecutionResult>> ExecuteCommandBatchCoreAsync(IEnumerable<string> texts)
         {
             var results = new List<CommandExecutionResult>();
@@ -106,46 +120,81 @@ namespace PowershellTerminal
             }
 
             var command = text.Trim();
+            command = leadingPromptPrefixRegex.Replace(command, string.Empty);
 
             await executeCommandLock.WaitAsync();
             try
             {
                 var start = DateTimeOffset.Now;
 
-                if (shellHost is null && IsClearCommand(command))
+                if (IsClearCommand(command))
                 {
-                    Write("\u001b[2J\u001b[3J\u001b[H");
+                    PostMessageToTerminal(new { type = "clear" });
+                    var promptPath = shellHost?.CurrentDirectory;
+                    if (string.IsNullOrWhiteSpace(promptPath))
+                    {
+                        promptPath = string.IsNullOrWhiteSpace(StartingDirectory) ? Environment.CurrentDirectory : StartingDirectory;
+                    }
+                    Write($"PS {promptPath}> ");
+
                     var clearResult = new CommandExecutionResult(command, string.Empty, start, DateTimeOffset.Now, false);
                     ExecutionLog.Add(clearResult);
                     CommandCompleted?.Invoke(this, new CommandExecutionCompletedEventArgs(clearResult));
                     return clearResult;
                 }
 
-                var pending = CreatePendingCommand(command, start, autoPublishOnCompletion: false);
+                WriteStyledFallbackCommandLine(command);
 
-                var wrappedCommand = $"{command}; [Console]::Out.Write('{pending.Token}')";
-                SendCommandLineToShell(wrappedCommand, command);
-
-                try
+                var isCargoBuild = command.StartsWith("cargo build", StringComparison.OrdinalIgnoreCase);
+                var progressTicks = 0;
+                var progressVisible = false;
+                var movedPastProgressLine = false;
+                if (isCargoBuild)
                 {
-                    await pending.Completion.Task.WaitAsync(TimeSpan.FromMinutes(5));
+                    Write("Building [=>          ]");
+                    progressVisible = true;
                 }
-                catch
-                {
-                }
 
-                var responseText = string.Empty;
-                lock (pendingCommandLock)
+                var sb = new StringBuilder();
+                if (shellHost is not null)
                 {
-                    if (ReferenceEquals(pendingCommand, pending))
+                    _ = await shellHost.ExecuteCommandAsync(command, chunk =>
                     {
-                        responseText = CleanExecutionDetailText(pending.Output.ToString());
-                        pendingCommand = null;
-                    }
+                        sb.Append(chunk);
 
-                    pendingCommandBuffer = string.Empty;
+                        if (isCargoBuild && progressVisible && !movedPastProgressLine)
+                        {
+                            Write("\r\n");
+                            movedPastProgressLine = true;
+                        }
+
+                        Write(chunk);
+
+                        if (isCargoBuild)
+                        {
+                            progressTicks += CountBuildProgressEvents(chunk);
+                            if (progressTicks > 0)
+                            {
+                                WriteCargoBuildProgress(progressTicks);
+                                progressVisible = true;
+                            }
+                        }
+                    });
                 }
 
+                if (isCargoBuild && progressVisible)
+                {
+                    Write("\r\n");
+                }
+
+                var promptPathAfter = shellHost?.CurrentDirectory;
+                if (string.IsNullOrWhiteSpace(promptPathAfter))
+                {
+                    promptPathAfter = string.IsNullOrWhiteSpace(StartingDirectory) ? Environment.CurrentDirectory : StartingDirectory;
+                }
+                Write($"PS {promptPathAfter}> ");
+
+                var responseText = CleanExecutionDetailText(sb.ToString());
                 var result = new CommandExecutionResult(command, responseText, start, DateTimeOffset.Now, false);
                 ExecutionLog.Add(result);
                 CommandCompleted?.Invoke(this, new CommandExecutionCompletedEventArgs(result));
@@ -154,6 +203,19 @@ namespace PowershellTerminal
             finally
             {
                 executeCommandLock.Release();
+            }
+        }
+
+        private void WriteProgressCommand(string command)
+        {
+            var firstTokenLength = GetFirstTokenLength(command);
+            if (firstTokenLength > 0)
+            {
+                Write($"{InputColorStart}{command[..firstTokenLength]}{InputColorEnd}{command[firstTokenLength..]}\r\n");
+            }
+            else
+            {
+                Write(command + "\r\n");
             }
         }
 
@@ -174,11 +236,14 @@ namespace PowershellTerminal
 
         private void SendCommandLineToShell(string commandLine, string? displayCommand = null)
         {
-            if (shellHost is not null)
+            if (shellHost is null)
             {
-                shellHost.WriteInput(commandLine + "\r");
                 return;
             }
+
+            var shownCommand = string.IsNullOrWhiteSpace(displayCommand) ? commandLine : displayCommand;
+            WriteStyledFallbackCommandLine(shownCommand);
+            shellHost.WriteInput(commandLine);
         }
 
         private void WriteStyledFallbackCommandLine(string command)
@@ -213,8 +278,28 @@ namespace PowershellTerminal
                 return;
             }
 
-            AppendPendingCommandOutput(filtered);
-            Write(filtered);
+            var cleaned = Regex.Replace(
+                filtered,
+                @"(?im)^PS\s+.+>\s+(cd\s+'.*'|Set-Location\s+'.*'\s+\|\s+Out-Null)\r?\n?",
+                string.Empty);
+
+            if (cleaned.Length == 0)
+            {
+                PublishPendingCommandIfReady();
+                return;
+            }
+
+            // Prompt detection must be done against ANSI-stripped text, otherwise colored prompts
+            // (e.g. from conda/venv) may not match and prefix like (base) gets lost on redraw.
+            var plainForPrompt = ansiSequenceRegex.Replace(cleaned, string.Empty);
+            var promptMatches = promptRegex.Matches(plainForPrompt);
+            if (promptMatches.Count > 0)
+            {
+                currentPromptText = promptMatches[^1].Value;
+            }
+
+            AppendPendingCommandOutput(cleaned);
+            Write(cleaned);
 
             PublishPendingCommandIfReady();
         }
@@ -461,6 +546,13 @@ namespace PowershellTerminal
         return;
       }
 
+      if (ctrlOrCmd && key === 'v') {
+        postMessage({ type: 'pasteRequest' });
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       if (ctrlOrCmd && event.shiftKey && key === 'v') {
         postMessage({ type: 'pasteRequest' });
         event.preventDefault();
@@ -483,30 +575,13 @@ namespace PowershellTerminal
     fitTerminal();
     postMessage({ type: 'ready' });
 
-    let inputLine = '';
+    let suppressInput = false;
+
     terminal.onData(data => {
-      for (let i = 0; i < data.length; i++) {
-        const char = data[i];
-        
-        if (char === '\r') {
-          // Enter key - send the complete line ONLY (don't send individual chars)
-          // The complete line is what we've buffered + the Enter
-          postMessage({ type: 'input', data: inputLine + '\r' });
-          inputLine = '';
-        } else if (char === '\u007f' || char === '\b') {
-          // Backspace - remove from buffer and send to terminal for visual feedback
-          if (inputLine.length > 0) {
-            inputLine = inputLine.slice(0, -1);
-          }
-          postMessage({ type: 'input', data: char });
-        } else if (char !== '\n' && !char.match(/[\u0000-\u001f]/)) {
-          // Regular character - just buffer it, DON'T send to backend yet
-          // We'll send it when Enter is pressed
-          inputLine += char;
-          // But DO write it to the terminal locally for visual feedback
-          terminal.write(char);
-        }
+      if (suppressInput) {
+        return;
       }
+      postMessage({ type: 'input', data });
     });
 
     chrome.webview.addEventListener('message', event => {
@@ -520,7 +595,15 @@ namespace PowershellTerminal
       } else if (message.type === 'focus') {
         terminal.focus();
       } else if (message.type === 'paste') {
-        terminal.paste(message.data ?? '');
+        const block = message.data ?? '';
+        suppressInput = true;
+        postMessage({ type: 'pasteBlock', data: block });
+        setTimeout(() => { suppressInput = false; }, 120);
+      } else if (message.type === 'copyAllRequest') {
+        terminal.selectAll();
+        const allText = (terminal.getSelection() || '').trim();
+        postMessage({ type: 'copy', data: allText });
+        terminal.clearSelection();
       }
     });
 
@@ -537,9 +620,16 @@ namespace PowershellTerminal
 
             try
             {
+                currentPromptText = $"PS {resolvedStartDirectory}> ";
                 shellHost = new PowerShellHost();
                 shellHost.OutputReceived += OnTerminalOutputReceived;
+                shellHost.ErrorReceived += OnTerminalErrorReceived;
+                shellHost.PromptUpdated += OnPromptUpdated;
                 shellHost.Start(resolvedStartDirectory);
+
+                // Ensure prompt is visible on startup immediately.
+                Write(currentPromptText);
+
                 PostMessageToTerminal(new { type = "focus" });
                 return;
             }
@@ -600,6 +690,31 @@ namespace PowershellTerminal
                         }
                         break;
 
+                    case "pasteBlock":
+                        if (!string.IsNullOrEmpty(payload.data) && shellHost is not null)
+                        {
+                            var block = payload.data;
+                            block = block.TrimStart('\r', '\n');
+                            if (block.Length > 0)
+                            {
+                                block = block.Replace("\r\n", "\n").Replace("\n", "\r\n");
+                                if (!block.EndsWith("\r\n", StringComparison.Ordinal))
+                                {
+                                    block += "\r\n";
+                                }
+
+                                // If there is unfinished local input, reset it before block paste.
+                                if (conPtyInputBuffer.Length > 0)
+                                {
+                                    conPtyInputBuffer.Clear();
+                                    conPtyCursorIndex = 0;
+                                }
+
+                                shellHost.WriteRawInput(block);
+                            }
+                        }
+                        break;
+
                     case "resize":
                         if (shellHost is not null && payload.cols > 0 && payload.rows > 0)
                         {
@@ -634,43 +749,194 @@ namespace PowershellTerminal
                 return;
             }
 
-            // Data from JavaScript is either:
-            // 1. Backspace character (\b or \u007f)
-            // 2. Complete command line ending with \r (only on Enter key)
+            // Fast path: pasted multiline block / pipeline continuation
+            if (data.Contains("\n") || data.Contains("\r\n"))
+            {
+                var firstLineEnd = data.IndexOf('\n');
+                if (firstLineEnd < 0)
+                {
+                    firstLineEnd = data.Length;
+                }
+
+                var firstLine = data[..firstLineEnd].TrimEnd('\r');
+                var remainder = firstLineEnd < data.Length ? data[firstLineEnd..] : string.Empty;
+
+                var firstTokenLength = GetFirstTokenLength(firstLine);
+                if (firstTokenLength > 0)
+                {
+                    Write($"{InputColorStart}{firstLine[..firstTokenLength]}{InputColorEnd}{firstLine[firstTokenLength..]}");
+                }
+                else
+                {
+                    Write(firstLine);
+                }
+
+                if (!string.IsNullOrEmpty(remainder))
+                {
+                    Write(remainder);
+                }
+
+                shellHost.WriteRawInput(data);
+                return;
+            }
 
             for (var i = 0; i < data.Length; i++)
             {
                 var ch = data[i];
 
-                // Handle backspace
+                // Handle arrow escape sequences from xterm (ESC [ A/B/C/D)
+                if (ch == '\u001b' && i + 2 < data.Length && data[i + 1] == '[')
+                {
+                    var code = data[i + 2];
+                    i += 2;
+
+                    switch (code)
+                    {
+                        case 'A':
+                            RecallHistoryPrevious();
+                            break;
+                        case 'B':
+                            RecallHistoryNext();
+                            break;
+                        case 'C':
+                            if (conPtyCursorIndex < conPtyInputBuffer.Length)
+                            {
+                                conPtyCursorIndex++;
+                                Write("\u001b[C");
+                            }
+                            break;
+                        case 'D':
+                            if (conPtyCursorIndex > 0)
+                            {
+                                conPtyCursorIndex--;
+                                Write("\u001b[D");
+                            }
+                            break;
+                    }
+
+                    continue;
+                }
+
                 if (ch == '\u007f' || ch == '\b')
                 {
-                    if (conPtyInputBuffer.Length > 0)
+                    if (conPtyCursorIndex > 0 && conPtyInputBuffer.Length > 0)
                     {
-                        conPtyInputBuffer.Length--;
+                        conPtyInputBuffer.Remove(conPtyCursorIndex - 1, 1);
+                        conPtyCursorIndex--;
+                        RewriteCurrentInputLine();
                     }
-                    Write("\b \b");
                     continue;
                 }
 
-                // Handle Enter - complete line transmission
                 if (ch == '\r')
                 {
-                    var fullCommand = conPtyInputBuffer.ToString();
+                    var fullCommand = conPtyInputBuffer.ToString().Trim();
+                    fullCommand = leadingPromptPrefixRegex.Replace(fullCommand, string.Empty);
                     conPtyInputBuffer.Clear();
+                    conPtyCursorIndex = 0;
+                    var commandStart = DateTimeOffset.Now;
 
-                    Write("\r\n");
-                    
-                    // Send the complete command to PowerShell
-                    shellHost.WriteInput(fullCommand);
+                    if (!string.IsNullOrWhiteSpace(fullCommand))
+                    {
+                        if (inputHistory.Count == 0 || !string.Equals(inputHistory[^1], fullCommand, StringComparison.Ordinal))
+                        {
+                            inputHistory.Add(fullCommand);
+                        }
+                        inputHistoryIndex = inputHistory.Count;
+                    }
+
+                    if (fullCommand.Equals("clear", StringComparison.OrdinalIgnoreCase) ||
+                        fullCommand.Equals("cls", StringComparison.OrdinalIgnoreCase) ||
+                        fullCommand.Equals("clear-host", StringComparison.OrdinalIgnoreCase))
+                    {
+                        PostMessageToTerminal(new { type = "clear" });
+                        Write(currentPromptText);
+                        PublishKeyboardCommandResult(fullCommand, commandStart);
+                    }
+                    else
+                    {
+                        Write("\r\n");
+                        shellHost.WriteInput(fullCommand);
+                        PublishKeyboardCommandResult(fullCommand, commandStart);
+                    }
+
                     continue;
                 }
 
-                // Regular character - buffer it (shouldn't normally get here since JS handles echo)
-                if (ch != '\n' && !char.IsControl(ch))
+                if (ch == '\n' || char.IsControl(ch))
                 {
-                    conPtyInputBuffer.Append(ch);
+                    continue;
                 }
+
+                conPtyInputBuffer.Insert(conPtyCursorIndex, ch);
+                conPtyCursorIndex++;
+                RewriteCurrentInputLine();
+            }
+        }
+
+        private void RewriteCurrentInputLine()
+        {
+            Write("\r\u001b[K");
+            Write(currentPromptText);
+
+            var text = conPtyInputBuffer.ToString();
+            var splitIndex = GetFirstTokenLength(text);
+
+            for (var i = 0; i < text.Length; i++)
+            {
+                var ch = text[i];
+                if (i < splitIndex && !char.IsWhiteSpace(ch))
+                {
+                    Write($"{InputColorStart}{ch}{InputColorEnd}");
+                }
+                else
+                {
+                    Write(ch.ToString());
+                }
+            }
+
+            var tail = conPtyInputBuffer.Length - conPtyCursorIndex;
+            if (tail > 0)
+            {
+                Write($"\u001b[{tail}D");
+            }
+        }
+
+        private void ReplaceCurrentInput(string newInput)
+        {
+            conPtyInputBuffer.Clear();
+            conPtyInputBuffer.Append(newInput);
+            conPtyCursorIndex = conPtyInputBuffer.Length;
+            RewriteCurrentInputLine();
+        }
+
+        private void RecallHistoryPrevious()
+        {
+            if (inputHistory.Count == 0 || inputHistoryIndex <= 0)
+            {
+                return;
+            }
+
+            inputHistoryIndex--;
+            ReplaceCurrentInput(inputHistory[inputHistoryIndex]);
+        }
+
+        private void RecallHistoryNext()
+        {
+            if (inputHistory.Count == 0)
+            {
+                return;
+            }
+
+            if (inputHistoryIndex < inputHistory.Count - 1)
+            {
+                inputHistoryIndex++;
+                ReplaceCurrentInput(inputHistory[inputHistoryIndex]);
+            }
+            else
+            {
+                inputHistoryIndex = inputHistory.Count;
+                ReplaceCurrentInput(string.Empty);
             }
         }
 
@@ -684,7 +950,37 @@ namespace PowershellTerminal
 
         private void OnTerminalOutputReceived(string output)
         {
+            if (!string.IsNullOrEmpty(output))
+            {
+                var plain = ansiSequenceRegex.Replace(output, string.Empty);
+                var promptMatches = promptRegex.Matches(plain);
+                if (promptMatches.Count > 0)
+                {
+                    currentPromptText = promptMatches[^1].Value;
+                }
+            }
+
             HandleTerminalOutputChunk(output);
+        }
+
+        private void OnTerminalErrorReceived(string output)
+        {
+            if (string.IsNullOrEmpty(output))
+            {
+                return;
+            }
+
+            HandleTerminalOutputChunk(output);
+        }
+
+        private void OnPromptUpdated(string prompt)
+        {
+            if (string.IsNullOrWhiteSpace(prompt))
+            {
+                return;
+            }
+
+            currentPromptText = prompt;
         }
 
         private void Write(string text)
@@ -741,6 +1037,8 @@ namespace PowershellTerminal
             if (shellHost is not null)
             {
                 shellHost.OutputReceived -= OnTerminalOutputReceived;
+                shellHost.ErrorReceived -= OnTerminalErrorReceived;
+                shellHost.PromptUpdated -= OnPromptUpdated;
                 shellHost.Dispose();
                 shellHost = null;
             }
@@ -797,6 +1095,39 @@ namespace PowershellTerminal
 
             StartTerminal(StartingDirectory);
             terminalProcessStarted = true;
+        }
+
+        private static int CountBuildProgressEvents(string chunk)
+        {
+            if (string.IsNullOrWhiteSpace(chunk))
+            {
+                return 0;
+            }
+
+            var count = 0;
+            var lines = chunk.Replace("\r\n", "\n").Split('\n');
+            foreach (var line in lines)
+            {
+                var t = line.TrimStart();
+                if (t.StartsWith("Compiling ", StringComparison.OrdinalIgnoreCase) ||
+                    t.StartsWith("Checking ", StringComparison.OrdinalIgnoreCase) ||
+                    t.StartsWith("Building ", StringComparison.OrdinalIgnoreCase) ||
+                    t.StartsWith("Finished ", StringComparison.OrdinalIgnoreCase))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private void WriteCargoBuildProgress(int ticks)
+        {
+            const int width = 12;
+            var position = Math.Max(1, (ticks % width) + 1);
+            var left = new string('=', position);
+            var right = new string(' ', width - position);
+            Write($"\rBuilding [{left}>{right}]");
         }
 
         private sealed class TerminalWebMessage

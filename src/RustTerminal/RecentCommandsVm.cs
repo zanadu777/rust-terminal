@@ -4,9 +4,12 @@ using Microsoft.Data.Sqlite;
 using PowershellTerminal;
 using System;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Windows;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace RustTerminal
 {
@@ -16,9 +19,38 @@ namespace RustTerminal
         private ObservableCollection<CommandExecutionResult> recentCommands = new();
 
         [ObservableProperty]
+        private ObservableCollection<Favorite> favorites = new();
+
+        [ObservableProperty]
         private bool filterByDirectory = true;
 
+        [ObservableProperty]
+        private bool isRunInProgress;
+
+        [ObservableProperty]
+        private string runStatusText = "Ready";
+
+        private string activeRecentCommandKey = string.Empty;
+        public string ActiveRecentCommandKey
+        {
+            get => activeRecentCommandKey;
+            set => SetProperty(ref activeRecentCommandKey, value);
+        }
+
+        private string activeFavoriteNameKey = string.Empty;
+        public string ActiveFavoriteNameKey
+        {
+            get => activeFavoriteNameKey;
+            set => SetProperty(ref activeFavoriteNameKey, value);
+        }
+
         public ICommand ExecuteRecentCommandCommand { get; }
+        public ICommand ExecuteFavoriteCommand { get; }
+        public ICommand ManageFavoritesCommand { get; }
+
+        private readonly Stopwatch runStopwatch = new();
+        private readonly DispatcherTimer runStatusTimer;
+        private string currentRunLabel = string.Empty;
 
         private PowerShellTerminalControl? terminal;
         private string currentDirectory = string.Empty;
@@ -26,6 +58,21 @@ namespace RustTerminal
         public RecentCommandsVm()
         {
             ExecuteRecentCommandCommand = new RelayCommand<string?>(ExecuteRecentCommand);
+            ExecuteFavoriteCommand = new RelayCommand<Favorite?>(ExecuteFavorite);
+            ManageFavoritesCommand = new RelayCommand(OpenFavoritesManager, () => !IsRunInProgress);
+
+            runStatusTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(100)
+            };
+            runStatusTimer.Tick += (_, _) => UpdateRunStatus();
+
+            LoadFavorites();
+        }
+
+        partial void OnIsRunInProgressChanged(bool value)
+        {
+            (ManageFavoritesCommand as RelayCommand)?.NotifyCanExecuteChanged();
         }
 
         public void AttachTerminal(PowerShellTerminalControl terminalControl)
@@ -35,6 +82,7 @@ namespace RustTerminal
             
             // Load initial commands for current directory
             RefreshDisplayedCommands();
+            LoadFavorites();
         }
 
         public void SetCurrentDirectory(string directory)
@@ -201,14 +249,137 @@ namespace RustTerminal
             return Path.Combine(folder, "settings.db");
         }
 
-        private void ExecuteRecentCommand(string? command)
+        private async void ExecuteRecentCommand(string? command)
         {
-            if (string.IsNullOrWhiteSpace(command) || terminal is null)
+            if (string.IsNullOrWhiteSpace(command) || terminal is null || IsRunInProgress)
             {
                 return;
             }
 
-            terminal.ExecuteCommand(command);
+            BeginRun(command.Trim());
+            ActiveRecentCommandKey = command.Trim();
+            try
+            {
+                await terminal.ExecuteCommand(command);
+                EndRun(success: true);
+            }
+            catch
+            {
+                EndRun(success: false);
+            }
+            finally
+            {
+                ActiveRecentCommandKey = string.Empty;
+            }
+        }
+
+        private async void ExecuteFavorite(Favorite? favorite)
+        {
+            if (favorite is null || terminal is null || IsRunInProgress)
+            {
+                return;
+            }
+
+            BeginRun($"Favorite: {favorite.Name}");
+            ActiveFavoriteNameKey = favorite.Name;
+            favorite.IsRunning = true;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(favorite.DirectoryPath) && Directory.Exists(favorite.DirectoryPath))
+                {
+                    terminal.SetWorkingDirectory(favorite.DirectoryPath);
+                }
+
+                var commands = favorite.GetCommands();
+                if (commands.Count == 0)
+                {
+                    EndRun(success: true);
+                    return;
+                }
+
+                foreach (var cmd in commands)
+                {
+                    await terminal.ExecuteCommand(cmd);
+                }
+
+                EndRun(success: true);
+            }
+            catch
+            {
+                EndRun(success: false);
+            }
+            finally
+            {
+                favorite.IsRunning = false;
+                ActiveFavoriteNameKey = string.Empty;
+            }
+        }
+
+        private void BeginRun(string label)
+        {
+            currentRunLabel = label;
+            IsRunInProgress = true;
+            runStopwatch.Restart();
+            UpdateRunStatus();
+            runStatusTimer.Start();
+        }
+
+        private void UpdateRunStatus()
+        {
+            if (!IsRunInProgress)
+            {
+                return;
+            }
+
+            RunStatusText = $"Running: {currentRunLabel}  Elapsed: {runStopwatch.Elapsed:mm\\:ss}";
+        }
+
+        private void EndRun(bool success)
+        {
+            runStatusTimer.Stop();
+            runStopwatch.Stop();
+            IsRunInProgress = false;
+            var verb = success ? "Completed" : "Failed";
+            RunStatusText = $"{verb}: {currentRunLabel}  Total: {runStopwatch.Elapsed.TotalSeconds:F2}s";
+            currentRunLabel = string.Empty;
+        }
+
+        private void OpenFavoritesManager()
+        {
+            var vm = new FavoritesManageVm(currentDirectory);
+            var view = new FavoritesManageView
+            {
+                DataContext = vm
+            };
+
+            var window = new Window
+            {
+                Title = "Manage Favorites",
+                Width = 980,
+                Height = 560,
+                Owner = Application.Current.MainWindow,
+                Content = view
+            };
+
+            window.Closed += (_, _) =>
+            {
+                ReloadFavorites();
+            };
+            window.ShowDialog();
+        }
+
+        public void ReloadFavorites()
+        {
+            Favorites.Clear();
+            foreach (var f in FavoritesStore.LoadAll())
+            {
+                Favorites.Add(f);
+            }
+        }
+
+        private void LoadFavorites()
+        {
+            ReloadFavorites();
         }
     }
 }

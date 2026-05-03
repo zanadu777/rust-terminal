@@ -6,7 +6,7 @@
         xmlns:local="clr-namespace:RustTerminal"
         xmlns:pst="clr-namespace:PowershellTerminal;assembly=PowershellTerminal"
         mc:Ignorable="d"
-        Title="Rust Terminal" Height="500" Width="900">
+        Title="Rust Terminal" Height="600" Width="1200">
     <Window.DataContext>
         <local:MainWindowVm/>
     </Window.DataContext>
@@ -25,8 +25,17 @@
                 <Button Content="Execution Log" Command="{Binding OpenExecutionLogCommand}" />
                 <Button Content="Configuration" Command="{Binding OpenConfigCommand}" Margin="8,0,0,0" />
                 <Button Content="Recent Commands" Command="{Binding OpenRecentCommandsBrowserCommand}" Margin="8,0,0,0" />
+                <Button Content="Favorites" Command="{Binding OpenFavoritesManagerCommand}" Margin="8,0,0,0" />
+                <Button Content="PS SDK Probe" Command="{Binding OpenPowerShellSdkProbeCommand}" Margin="8,0,0,0" />
+                <Button Content="Copy All" Command="{Binding CopyAllTerminalTextCommand}" Margin="8,0,0,0" />
             </ToolBar>
         </ToolBarTray>
+
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem>
+                <TextBlock Text="{Binding ElementName=RecentCommandsControl, Path=DataContext.RunStatusText}" />
+            </StatusBarItem>
+        </StatusBar>
 
         <local:WorkingDirectory DockPanel.Dock="Top"
                                 Margin="8,8,8,0"

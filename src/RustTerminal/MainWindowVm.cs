@@ -36,6 +36,7 @@ namespace RustTerminal
         public ObservableCollection<CommandExecutionResult> CommandExecutions { get; } = new();
 
         public event EventHandler<string>? DirectoryChanged;
+        public event EventHandler? FavoritesChanged;
 
         public ICommand CargoBuildCommand { get; }
         public ICommand CargoCleanCommand { get; }
@@ -47,6 +48,9 @@ namespace RustTerminal
         public ICommand UseSelectedDirectoryCommand { get; }
         public ICommand OpenRecentCommandsBrowserCommand { get; }
         public ICommand ControlCCommand { get; }
+        public ICommand OpenPowerShellSdkProbeCommand { get; }
+        public ICommand CopyAllTerminalTextCommand { get; }
+        public ICommand OpenFavoritesManagerCommand { get; }
 
         public MainWindowVm()
         {
@@ -60,6 +64,9 @@ namespace RustTerminal
             UseSelectedDirectoryCommand = new RelayCommand(UseSelectedDirectory, () => SelectedStoredDirectory is not null);
             OpenRecentCommandsBrowserCommand = new RelayCommand(OpenRecentCommandsBrowser);
             ControlCCommand = new RelayCommand(SendControlC);
+            OpenPowerShellSdkProbeCommand = new RelayCommand(OpenPowerShellSdkProbe);
+            CopyAllTerminalTextCommand = new RelayCommand(CopyAllTerminalText);
+            OpenFavoritesManagerCommand = new RelayCommand(OpenFavoritesManager);
 
             LoadDirectoryHistory();
             var storedBaseDirectory = LoadSetting(BaseDirectoryKey);
@@ -93,9 +100,14 @@ namespace RustTerminal
                 // Raise event for code-behind to notify RecentCommands
                 DirectoryChanged?.Invoke(this, value);
 
-                if (terminal is not null && Directory.Exists(value))
+                if (terminal is not null)
                 {
-                    terminal.ExecuteCommand($"cd '{value}'");
+                    terminal.SetWorkingDirectory(value);
+                    var webView = terminal.GetWebView2();
+                    if (webView?.CoreWebView2 is not null)
+                    {
+                        webView.CoreWebView2.PostWebMessageAsJson(System.Text.Json.JsonSerializer.Serialize(new { type = "focus" }));
+                    }
                 }
             }
         }
@@ -178,8 +190,58 @@ namespace RustTerminal
                 Content = browserView
             };
 
+            browserWindow.Closed += (_, _) =>
+            {
+                if (Application.Current.MainWindow is MainWindow mw &&
+                    mw.FindName("RecentCommandsControl") is RecentCommands recent)
+                {
+                    recent.ViewModel?.SetCurrentDirectory(BaseDirectory);
+                }
+            };
+
             browserWindow.Show();
             browserWindow.Activate();
+        }
+
+        private void OpenPowerShellSdkProbe()
+        {
+            var view = new PowerShellSdkEventProbeView
+            {
+                DataContext = new PowerShellSdkEventProbeVm()
+            };
+
+            var window = new Window
+            {
+                Title = "PowerShell SDK Event Probe",
+                Width = 900,
+                Height = 520,
+                Owner = Application.Current.MainWindow,
+                Content = view
+            };
+
+            window.Show();
+            window.Activate();
+        }
+
+        private void OpenFavoritesManager()
+        {
+            var vm = new FavoritesManageVm(BaseDirectory);
+            var view = new FavoritesManageView
+            {
+                DataContext = vm
+            };
+
+            var window = new Window
+            {
+                Title = "Manage Favorites",
+                Width = 980,
+                Height = 560,
+                Owner = Application.Current.MainWindow,
+                Content = view
+            };
+
+            window.Closed += (_, _) => FavoritesChanged?.Invoke(this, EventArgs.Empty);
+            window.ShowDialog();
         }
 
         private void SendControlC()
@@ -193,6 +255,15 @@ namespace RustTerminal
             }
             
             terminal.SendInterrupt();
+        }
+
+        private void CopyAllTerminalText()
+        {
+            var webView = terminal?.GetWebView2();
+            if (webView?.CoreWebView2 is not null)
+            {
+                webView.CoreWebView2.PostWebMessageAsJson(System.Text.Json.JsonSerializer.Serialize(new { type = "copyAllRequest" }));
+            }
         }
 
         private void RemoveSelectedDirectory()

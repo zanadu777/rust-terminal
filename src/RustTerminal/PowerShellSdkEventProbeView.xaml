@@ -1,0 +1,28 @@
+<UserControl x:Class="RustTerminal.PowerShellSdkEventProbeView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="450"
+             d:DesignWidth="800">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal">
+            <Button Content="Run Probe Command" Command="{Binding RunCommand}" Padding="12,6"/>
+        </StackPanel>
+
+        <TextBox Grid.Row="1"
+                 Margin="0,10,0,0"
+                 Text="{Binding EventLogText}"
+                 IsReadOnly="True"
+                 TextWrapping="NoWrap"
+                 VerticalScrollBarVisibility="Auto"
+                 HorizontalScrollBarVisibility="Auto"
+                 FontFamily="Consolas"/>
+    </Grid>
+</UserControl>

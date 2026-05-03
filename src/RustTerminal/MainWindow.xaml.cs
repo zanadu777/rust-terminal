@@ -19,6 +19,7 @@ namespace RustTerminal
                 viewModel = vm;
                 vm.AttachTerminal(TerminalControl);
                 vm.DirectoryChanged += ViewModel_DirectoryChanged;
+                vm.FavoritesChanged += ViewModel_FavoritesChanged;
             }
         }
 
@@ -41,6 +42,14 @@ namespace RustTerminal
             if (this.FindName("RecentCommandsControl") is RecentCommands recentCommands)
             {
                 recentCommands.ViewModel?.SetCurrentDirectory(directory);
+            }
+        }
+
+        private void ViewModel_FavoritesChanged(object? sender, EventArgs e)
+        {
+            if (this.FindName("RecentCommandsControl") is RecentCommands recentCommands)
+            {
+                recentCommands.ViewModel?.ReloadFavorites();
             }
         }
     }
